@@ -1,0 +1,10 @@
+[Unit]
+Description=Pelurvis attendance reminder (Mon-Fri 21:30, Sat 13:30)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 21:30:00
+OnCalendar=Sat *-*-* 13:30:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

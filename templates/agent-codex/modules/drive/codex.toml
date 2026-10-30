@@ -1,0 +1,35 @@
+# Drive module block for ~/.codex/config.toml (merged by core/bin/build-config).
+# Google Drive, read-only: search and read documents, spreadsheets and presentations.
+
+[features]
+apps = true
+
+[apps._default]
+enabled = false
+
+[apps.connector_5f3c8c41a1e54ad7a76272c89e2554fa]
+enabled = true
+default_tools_enabled = false
+
+[apps.connector_5f3c8c41a1e54ad7a76272c89e2554fa.tools]
+search = { enabled = true }
+fetch = { enabled = true }
+recent_documents = { enabled = true }
+list_folder = { enabled = true }
+list_drives = { enabled = true }
+get_file_metadata = { enabled = true }
+export_file = { enabled = true }
+get_document = { enabled = true }
+get_document_text = { enabled = true }
+get_document_tables = { enabled = true }
+get_document_paragraph_range = { enabled = true }
+find_document_text_range = { enabled = true }
+get_spreadsheet_metadata = { enabled = true }
+get_spreadsheet_range = { enabled = true }
+get_spreadsheet_cells = { enabled = true }
+search_spreadsheet_rows = { enabled = true }
+get_presentation = { enabled = true }
+get_presentation_text = { enabled = true }
+get_presentation_outline = { enabled = true }
+get_slide = { enabled = true }
+get_profile = { enabled = true }

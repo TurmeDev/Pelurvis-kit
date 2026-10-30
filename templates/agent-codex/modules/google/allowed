@@ -1,0 +1,8 @@
+# App tools enabled by the google module (one regex per line, full name).
+# Everything not listed here is blocked by the base guard, even if Codex offers it.
+
+# Gmail: read, search and prepare drafts. Nothing that sends, forwards, deletes, archives or labels.
+mcp__codex_apps__gmail__(search_emails|search_email_ids|read_email|read_email_thread|batch_read_email|batch_read_email_threads|read_attachment|list_labels|list_drafts|create_draft|get_profile)
+
+# Google Calendar: view the agenda and create events when the owner asks.
+mcp__codex_apps__google_calendar__(search_events|search|fetch|read_event|batch_read_event|list_calendars|get_availability|get_colors|get_profile|create_event)

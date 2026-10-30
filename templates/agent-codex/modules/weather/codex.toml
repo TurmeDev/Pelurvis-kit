@@ -1,0 +1,11 @@
+# Weather module block for ~/.codex/config.toml (merged by core/bin/build-config,
+# which replaces __HOME__ with the bot's home).
+# Own MCP server: Codex launches it outside the sandbox, and the server only queries
+# open-meteo.com. Automatic approval: it only reads the forecast.
+
+[mcp_servers.weather]
+command = "/usr/bin/python3"
+args = ["__HOME__/bot/modules/weather/server.py"]
+startup_timeout_sec = 10
+tool_timeout_sec = 30
+default_tools_approval_mode = "approve"

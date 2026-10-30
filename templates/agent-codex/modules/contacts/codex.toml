@@ -1,0 +1,17 @@
+# Contacts module block for ~/.codex/config.toml (merged by core/bin/build-config).
+# Google Contacts, read-only.
+
+[features]
+apps = true
+
+[apps._default]
+enabled = false
+
+[apps.connector_c0f748249d6a42aea4b00fd375570ded]
+enabled = true
+default_tools_enabled = false
+
+[apps.connector_c0f748249d6a42aea4b00fd375570ded.tools]
+get_profile = { enabled = true }
+read_contact = { enabled = true }
+search_contacts = { enabled = true }

@@ -1,0 +1,92 @@
+{
+  "model": "sonnet",
+  "enabledPlugins": {
+    "engineering@synced": false,
+    "data@synced": false
+  },
+  "permissions": {
+    "defaultMode": "default",
+    "allow": [
+      "mcp__plugin_telegram_telegram__reply",
+      "mcp__plugin_telegram_telegram__react",
+      "mcp__plugin_telegram_telegram__edit_message",
+      "mcp__plugin_telegram_telegram__download_attachment",
+      "Bash(/home/pelurvis/pelurvis/core/bin/transcribe:*)",
+      "Bash(date:*)",
+      "Read(//home/pelurvis/.claude/channels/telegram/inbox/**)",
+      "mcp__claude_ai_Notion__notion-create-file-upload",
+      "Bash(/home/pelurvis/pelurvis/core/bin/upload-notion:*)",
+      "Bash(/home/pelurvis/pelurvis/modules/university/bin/uni educa:*)",
+      "Bash(/home/pelurvis/pelurvis/modules/university/bin/uni ealu:*)",
+      "Bash(/home/pelurvis/pelurvis/modules/university/bin/uni actions)",
+      "mcp__claude_ai_Notion__notion-search",
+      "mcp__claude_ai_Notion__notion-fetch",
+      "mcp__claude_ai_Notion__notion-query-data-sources",
+      "mcp__claude_ai_Notion__notion-memory-search",
+      "mcp__claude_ai_Notion__notion-get-self",
+      "mcp__claude_ai_Notion__notion-list-recent-pages",
+      "mcp__claude_ai_Notion__notion-get-comments",
+      "mcp__claude_ai_Notion__notion-create-pages",
+      "mcp__claude_ai_Notion__notion-update-page",
+      "mcp__claude_ai_Notion__notion-create-comment",
+      "mcp__claude_ai_Gmail__search_threads",
+      "mcp__claude_ai_Gmail__get_thread",
+      "mcp__claude_ai_Gmail__get_message",
+      "mcp__claude_ai_Gmail__list_labels",
+      "mcp__claude_ai_Gmail__list_drafts",
+      "mcp__claude_ai_Gmail__get_draft",
+      "mcp__claude_ai_Gmail__create_draft",
+      "mcp__claude_ai_Gmail__update_draft",
+      "mcp__claude_ai_Google_Calendar__list_calendars",
+      "mcp__claude_ai_Google_Calendar__list_events",
+      "mcp__claude_ai_Google_Calendar__search_events",
+      "mcp__claude_ai_Google_Calendar__get_event",
+      "mcp__claude_ai_Google_Calendar__suggest_time",
+      "mcp__claude_ai_Google_Drive__search_files",
+      "mcp__claude_ai_Google_Drive__list_recent_files",
+      "mcp__claude_ai_Google_Drive__get_file_metadata",
+      "mcp__claude_ai_Google_Drive__read_file_content",
+      "mcp__claude_ai_Google_Drive__download_file_content"
+    ],
+    "deny": [
+      "mcp__claude_ai_Notion__notion-delete-pages",
+      "mcp__claude_ai_Notion__notion-delete-databases",
+      "mcp__claude_ai_Notion__notion-move-pages",
+      "mcp__claude_ai_Notion__notion-delete-comment",
+      "mcp__claude_ai_Gmail__send_message",
+      "mcp__claude_ai_Gmail__reply",
+      "mcp__claude_ai_Gmail__forward",
+      "mcp__claude_ai_Gmail__trash_message",
+      "mcp__claude_ai_Gmail__trash_thread",
+      "mcp__claude_ai_Gmail__delete_draft",
+      "mcp__claude_ai_Gmail__delete_label",
+      "mcp__claude_ai_Gmail__mark_message_spam",
+      "mcp__claude_ai_Gmail__mark_thread_spam",
+      "mcp__claude_ai_Google_Calendar__delete_event",
+      "mcp__claude_ai_Google_Calendar__respond_to_event",
+      "mcp__claude_ai_Google_Drive__share_file",
+      "mcp__claude_ai_Google_Drive__trash_file",
+      "Read(//home/pelurvis/.config/pelurvis-secrets/**)",
+      "Edit(//home/pelurvis/.config/pelurvis-secrets/**)",
+      "Edit(//home/pelurvis/pelurvis/.claude/**)",
+      "Edit(//home/pelurvis/pelurvis/core/**)",
+      "Edit(//home/pelurvis/pelurvis/modules/**)",
+      "Edit(//home/pelurvis/pelurvis/skin/**)",
+      "Edit(//home/pelurvis/pelurvis/CLAUDE.md)",
+      "Bash(/home/pelurvis/pelurvis/modules/university/bin/uni-setup:*)",
+      "Bash(sudo:*)",
+      "Bash(rm -rf:*)",
+      "Bash(git push:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "python3 /home/pelurvis/pelurvis/core/guard.py" }
+        ]
+      }
+    ]
+  }
+}

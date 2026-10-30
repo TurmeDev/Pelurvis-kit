@@ -1,0 +1,384 @@
+#!/usr/bin/env python3
+"""Telegram bridge for the bot: one message from the owner → Codex → a single reply.
+
+No progress messages, headers or footers: while Codex works, Telegram shows
+"typing…", and when it finishes only the final reply arrives.
+- It only serves the owner's chat; others are silently ignored.
+- Continuous conversation (codex exec resume). A new one starts with /new or after
+  SESSION_HOURS without messages.
+- Voice notes: the bridge downloads them from Telegram and transcribes them with the shared
+  Whisper of pelupc (abstract socket @pelupc-voice, which only serves allowed
+  users). Codex receives the text marked as a voice note; it never touches the socket.
+- Photos and files get a fixed reply.
+- Clock: `telegram-bridge --task <module>/<task>` runs the request in
+  modules/<module>/tasks/<task>.md inside the same conversation and sends the
+  reply; if Codex replies exactly NOTHING, nothing is sent. It is launched by the
+  timers that core/bin/schedule creates.
+- A lock (flock) keeps the chat and the tasks from running Codex at the same time, and
+  the state is re-read from disk before each change.
+- /model opens a panel with buttons to choose model and reasoning, and shows the
+  tokens used today. The models come from ~/.codex/models_cache.json.
+Configuration in ~/.config/bot-secrets/telegram.env (600): TOKEN=… and OWNER=<chat id>.
+Run by bot.service; it needs nothing outside the standard library.
+"""
+import fcntl
+import hashlib
+import html
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+import urllib.request
+from contextlib import contextmanager
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+WORK = ROOT / "work"
+CONF = Path.home() / ".config/bot-secrets/telegram.env"
+STATE = Path.home() / ".local/state/bot/session.json"
+LOCK = STATE.with_name("lock")
+TASK = re.compile(r"^[a-z0-9-]+/[a-z0-9-]+$")
+SESSION_HOURS = 12
+MAX_TELEGRAM = 4000
+CODEX_TIMEOUT = 600
+TEXT_ONLY = "For now I understand text and voice notes; photos and files not yet. Could you write it to me?"
+NO_HEARING = "I could not listen to the audio right now. Could you write it to me?"
+VOICE = "\0pelupc-voice"
+MAX_AUDIO = 20 * 1024 * 1024  # download limit of a Telegram bot
+MODELS = Path.home() / ".codex/models_cache.json"
+LEVELS = {"low": "Low (saves)", "medium": "Medium", "high": "High (uses more)"}
+FAILURE = "I had a technical problem and could not reply. Try again in a while; if it persists, let your administrator know."
+
+
+def log(*parts):
+    print(time.strftime("%Y-%m-%d %H:%M:%S"), *parts, flush=True)
+
+
+def read_conf():
+    data = {}
+    for line in CONF.read_text().splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, v = line.split("=", 1)
+            data[k.strip()] = v.strip()
+    return data["TOKEN"], int(data["OWNER"])
+
+
+TOKEN, OWNER = read_conf()
+API = f"https://api.telegram.org/bot{TOKEN}/"
+
+
+def tg(method, **params):
+    data = urllib.parse.urlencode({k: json.dumps(v) if isinstance(v, (list, dict)) else v
+                                   for k, v in params.items()}).encode()
+    with urllib.request.urlopen(API + method, data=data, timeout=70) as r:
+        res = json.load(r)
+    if not res.get("ok"):
+        raise RuntimeError(f"{method}: {res.get('description')}")
+    return res["result"]
+
+
+def to_html(text):
+    """Codex's basic Markdown (**bold**, `code`) to Telegram HTML."""
+    t = html.escape(text, quote=False)
+    t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
+    t = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", t)
+    return t
+
+
+def send(text):
+    text = text.strip() or "…"
+    chunks = [text[i:i + MAX_TELEGRAM] for i in range(0, len(text), MAX_TELEGRAM)]
+    for chunk in chunks:
+        try:
+            tg("sendMessage", chat_id=OWNER, text=to_html(chunk), parse_mode="HTML",
+               link_preview_options={"is_disabled": True})
+        except Exception:
+            tg("sendMessage", chat_id=OWNER, text=chunk)  # no formatting if the HTML is rejected
+
+
+def available_models():
+    """[(slug, name, levels)] of the account's visible models, in Codex's order."""
+    try:
+        ms = json.loads(MODELS.read_text()).get("models", [])
+    except Exception:
+        return []
+    ms = sorted((m for m in ms if m.get("visibility") == "list"), key=lambda m: m.get("priority", 99))
+    return [(m["slug"], m.get("display_name", m["slug"]),
+             [n["effort"] for n in m.get("supported_reasoning_levels", []) if n.get("effort") in LEVELS])
+            for m in ms]
+
+
+def chosen(state):
+    """Current model and level; if the saved one no longer exists, the first available."""
+    ms = available_models()
+    slugs = {m[0]: m for m in ms}
+    model = state.get("model") if state.get("model") in slugs else (ms[0][0] if ms else None)
+    levels = slugs[model][2] if model else list(LEVELS)
+    level = state.get("reasoning") if state.get("reasoning") in levels else "medium"
+    return model, level
+
+
+def panel(state):
+    model, level = chosen(state)
+    ms = available_models()
+    name = next((m[1] for m in ms if m[0] == model), model or "default")
+    today = state.get("usage", {}).get(time.strftime("%Y-%m-%d"), 0)
+    tokens = f"{today:,}"
+    text = (f"Model: <b>{html.escape(name)}</b>\n"
+            f"Reasoning: <b>{LEVELS.get(level, level)}</b>\n"
+            f"Today you have used {tokens} tokens.\n\n"
+            "The ones at the top and low reasoning use less.")
+    rows = [[{"text": ("✅ " if slug == model else "") + nom, "callback_data": f"m:{slug}"}] for slug, nom, _ in ms]
+    levels = next((m[2] for m in ms if m[0] == model), list(LEVELS))
+    rows.append([{"text": ("✅ " if n == level else "") + LEVELS[n].split(" (")[0], "callback_data": f"r:{n}"}
+                 for n in LEVELS if n in levels])
+    return text, {"inline_keyboard": rows}
+
+
+def button(cb):
+    data = cb.get("data", "")
+    ms = {m[0]: m for m in available_models()}
+    kind, _, value = data.partition(":")
+    with lock() as state:
+        if kind == "m" and value in ms:
+            state["model"] = value
+        elif kind == "r" and value in LEVELS:
+            state["reasoning"] = value
+    tg("answerCallbackQuery", callback_query_id=cb["id"], text="Done")
+    text, keyboard = panel(state)
+    msg = cb.get("message") or {}
+    try:
+        tg("editMessageText", chat_id=OWNER, message_id=msg.get("message_id"), text=text,
+           parse_mode="HTML", reply_markup=keyboard)
+    except Exception:
+        pass  # the panel already showed the same thing
+
+
+def listen(file_id):
+    """Downloads the voice note from Telegram and transcribes it with pelupc's shared Whisper."""
+    info = tg("getFile", file_id=file_id)
+    if info.get("file_size", 0) > MAX_AUDIO:
+        raise RuntimeError("audio too large")
+    with urllib.request.urlopen(f"https://api.telegram.org/file/bot{TOKEN}/{info['file_path']}",
+                                timeout=60) as r:
+        data = r.read(MAX_AUDIO + 1)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(180)
+        s.connect(VOICE)
+        s.sendall(data)
+        s.shutdown(socket.SHUT_WR)
+        text = b"".join(iter(lambda: s.recv(65536), b"")).decode().strip()
+    if not text or text.startswith("error:"):
+        raise RuntimeError(text or "no reply from the voice service")
+    return text
+
+
+def typing(done):
+    while not done.wait(4):
+        try:
+            tg("sendChatAction", chat_id=OWNER, action="typing")
+        except Exception:
+            pass
+
+
+def load_state():
+    try:
+        return json.loads(STATE.read_text())
+    except Exception:
+        return {}
+
+
+def save_state(state):
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = STATE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state))
+    tmp.replace(STATE)
+
+
+@contextmanager
+def lock():
+    """Exclusion between the chat and the clock tasks; hands over the fresh state and saves it."""
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOCK, "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        state = load_state()
+        yield state
+        save_state(state)
+
+
+def codex(text, session, state):
+    model, level = chosen(state)
+    args = ["codex", "exec", "--json", "--skip-git-repo-check", "--color=never",
+            "-c", f'model_reasoning_effort="{level}"']
+    if model:
+        args += ["-m", model]
+    args += ["resume", session, "-"] if session else ["-"]
+    # From work/: the sandbox only allows writing there, so the core, skin,
+    # modules and AGENTS.md are read-only for the system, not just for the guard.
+    WORK.mkdir(exist_ok=True)
+    proc = subprocess.run(args, input=text, capture_output=True, text=True,
+                          cwd=WORK, timeout=CODEX_TIMEOUT)
+    thread, reply = session, None
+    for line in proc.stdout.splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get("type") == "thread.started":
+            thread = ev.get("thread_id") or thread
+        item = ev.get("item") or {}
+        if ev.get("type") == "item.completed" and item.get("type") == "agent_message":
+            reply = item.get("text")  # the last one is the final reply
+        if ev.get("type") == "turn.completed":
+            u = ev.get("usage") or {}
+            day = time.strftime("%Y-%m-%d")
+            usage = state.setdefault("usage", {})
+            usage[day] = usage.get(day, 0) + u.get("input_tokens", 0) + u.get("output_tokens", 0)
+            for old in sorted(usage)[:-30]:
+                usage.pop(old)  # only the last 30 days
+    if reply is None:
+        raise RuntimeError(f"codex rc={proc.returncode}: {proc.stderr[-500:]}")
+    return reply, thread
+
+
+def instructions_signature():
+    """Fingerprint of AGENTS.md and the skills. Codex loads them when a conversation starts,
+    so if they change a new one must be started for them to take effect."""
+    h = hashlib.sha256()
+    for f in [ROOT / "AGENTS.md", *sorted((Path.home() / ".agents/skills").glob("*/SKILL.md"))]:
+        try:
+            h.update(str(f).encode() + f.read_bytes())
+        except OSError:
+            pass
+    return h.hexdigest()[:16]
+
+
+def turn(text, state, *, from_owner):
+    """Runs Codex in the current conversation (inside the lock) and returns the reply."""
+    now = time.time()
+    if now - state.get("last", 0) > SESSION_HOURS * 3600:
+        state.pop("session", None)
+    signature = instructions_signature()
+    if state.get("signature") != signature:
+        if state.pop("session", None):
+            log("new instructions: starting a new conversation")
+        state["signature"] = signature
+    try:
+        reply, thread = codex(text, state.get("session"), state)
+    except RuntimeError:
+        if not state.get("session"):
+            raise
+        log("could not resume the conversation; starting a new one")
+        reply, thread = codex(text, None, state)
+    state["session"] = thread
+    if from_owner:
+        state["last"] = now  # tasks do not keep the conversation alive
+    return reply
+
+
+def handle(msg):
+    text = msg.get("text")
+    heard = None
+    audio = msg.get("voice") or msg.get("audio")
+    if text is None and audio:
+        try:
+            tg("sendChatAction", chat_id=OWNER, action="typing")
+            heard = listen(audio["file_id"])
+        except Exception as e:
+            log("voice", type(e).__name__, str(e)[:200])
+            send(NO_HEARING)
+            return
+        text = "[Voice note from the owner, transcribed automatically; may contain errors]\n" + heard
+    elif text is None:
+        send(TEXT_ONLY)
+        return
+    command = text.strip().lower()
+    if command == "/model":
+        t, keyboard = panel(load_state())
+        tg("sendMessage", chat_id=OWNER, text=t, parse_mode="HTML", reply_markup=keyboard)
+        return
+    if command in ("/new", "/start"):
+        with lock() as state:
+            state.pop("session", None)
+        if command == "/new":
+            send("Done, we are starting a new conversation.")
+            return
+        text = "Hello"
+    done = threading.Event()
+    threading.Thread(target=typing, args=(done,), daemon=True).start()
+    try:
+        tg("sendChatAction", chat_id=OWNER, action="typing")
+        with lock() as state:
+            reply = turn(text, state, from_owner=True)
+        if heard:  # like Pelurvis: first what was understood, so it can be corrected
+            reply = f"🎙️ Understood: {heard}\n\n{reply}"
+        send(reply)
+    except Exception as e:
+        log("error", type(e).__name__, str(e)[:300])
+        send(FAILURE)
+    finally:
+        done.set()
+
+
+def task(name):
+    """Clock: runs modules/<m>/tasks/<t>.md and sends the reply, unless NOTHING."""
+    if not TASK.match(name):
+        sys.exit(f"invalid task: {name!r} (expected module/task)")
+    module, t = name.split("/")
+    file = ROOT / "modules" / module / "tasks" / f"{t}.md"
+    if not file.is_file():
+        sys.exit(f"{file} does not exist")
+    request = (f"[Scheduled task \"{name}\". The owner did not ask for it now: write to them like a "
+               "notice. If there is nothing to tell them, reply exactly NOTHING.]\n\n" + file.read_text())
+    with lock() as state:
+        reply = turn(request, state, from_owner=False)
+    if reply.strip().strip(".").upper() == "NOTHING":
+        log("task", name, "nothing new")
+        return
+    send(reply)
+    log("task", name, "sent")
+
+
+def main():
+    tg("setMyCommands", commands=[{"command": "new", "description": "Start a new conversation"},
+                                  {"command": "model", "description": "Choose model and see usage"}])
+    offset = load_state().get("offset")
+    log("bridge ready")
+    while True:
+        try:
+            updates = tg("getUpdates", timeout=50, offset=offset, allowed_updates=["message", "callback_query"])
+        except Exception as e:
+            log("getUpdates", type(e).__name__, str(e)[:200])
+            time.sleep(5)
+            continue
+        for up in updates:
+            offset = up["update_id"] + 1
+            with lock() as state:
+                state["offset"] = offset
+            cb = up.get("callback_query")
+            if cb:
+                if (cb.get("from") or {}).get("id") == OWNER:
+                    button(cb)
+                continue
+            msg = up.get("message") or {}
+            sender = (msg.get("from") or {}).get("id")
+            if (msg.get("chat") or {}).get("id") != OWNER or sender != OWNER:
+                continue  # only the owner
+            if time.time() - msg.get("date", 0) > 900:
+                continue  # messages from when the bot was down a long time ago
+            handle(msg)
+
+
+if __name__ == "__main__":
+    try:
+        if len(sys.argv) == 3 and sys.argv[1] == "--task":
+            task(sys.argv[2])
+        else:
+            main()
+    except KeyboardInterrupt:
+        sys.exit(0)

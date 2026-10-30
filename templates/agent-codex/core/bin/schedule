@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Schedules (or removes) a clock task. Run by the administrator; not by the agent.
+#
+#   schedule <module>/<task> "<OnCalendar>"   e.g. schedule productivity/brief "*-*-* 06:30:00"
+#   schedule --remove <module>/<task>
+#   schedule --list
+#
+# The task is modules/<module>/tasks/<task>.md. It creates bot-task-<module>-<task>.timer, which
+# launches bot-task@.service: `telegram-bridge --task <module>/<task>`.
+set -euo pipefail
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+dir="$HOME/.config/systemd/user"
+mkdir -p "$dir"
+
+# Template unit, a single one for all tasks.
+cat > "$dir/bot-task@.service" <<'EOF'
+[Unit]
+Description=Bot clock task: %I
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/bot/core/bin/telegram-bridge --task %I
+EOF
+
+case "${1:-}" in
+  --list)
+    systemctl --user list-timers 'bot-task-*' --no-pager
+    exit 0 ;;
+  --remove)
+    name="${2:?usage: schedule --remove module/task}"
+    unit="bot-task-${name//\//-}.timer"
+    systemctl --user disable --now "$unit" 2>/dev/null || true
+    rm -f "$dir/$unit"
+    systemctl --user daemon-reload
+    echo "removed $name"
+    exit 0 ;;
+esac
+
+name="${1:?usage: schedule module/task \"OnCalendar\"}"
+when="${2:?missing the OnCalendar schedule, e.g. \"Mon *-*-* 09:00:00\"}"
+[[ "$name" =~ ^[a-z0-9-]+/[a-z0-9-]+$ ]] || { echo "invalid name: $name" >&2; exit 2; }
+[[ -f "$root/modules/${name%%/*}/tasks/${name#*/}.md" ]] || { echo "does not exist: modules/${name%%/*}/tasks/${name#*/}.md" >&2; exit 2; }
+systemd-analyze calendar "$when" >/dev/null || { echo "invalid schedule: $when" >&2; exit 2; }
+
+instance="$(systemd-escape "$name")"
+unit="bot-task-${name//\//-}.timer"
+cat > "$dir/$unit" <<EOF
+[Unit]
+Description=Bot clock: $name ($when)
+
+[Timer]
+OnCalendar=$when
+Persistent=false
+Unit=bot-task@$instance.service
+
+[Install]
+WantedBy=timers.target
+EOF
+systemctl --user daemon-reload
+systemctl --user enable --now "$unit" >/dev/null
+systemctl --user list-timers "$unit" --no-pager | sed -n 2p

@@ -1,0 +1,34 @@
+# Base Codex configuration of the bot (core). core/bin/build-config merges it with each module's codex.toml and writes ~/.codex/config.toml.
+# With nobody to approve: it never asks for approval, and whatever the sandbox does not allow, fails.
+approval_policy = "never"
+# `bot` profile (below): besides the sandbox, it does not allow reading the secrets.
+default_permissions = "bot"
+sandbox_mode = "workspace-write"
+# Codex's web search does not go through the hooks: off until a module needs it.
+web_search = "disabled"
+
+# No plugins or connectors from the ChatGPT account: the bot only uses what its modules give it.
+# No browser or desktop control. Subagents are blocked by the guard.
+[features]
+plugins = false
+apps = false
+remote_plugin = false
+multi_agent = false
+browser_use = false
+computer_use = false
+in_app_browser = false
+
+[sandbox_workspace_write]
+network_access = false
+
+[projects."/home/__AGENT__/bot"]
+trust_level = "trusted"
+
+# Commands cannot read the Codex credentials or the Telegram token,
+# even if they dodge the guard (for example, with wildcards in the path).
+[permissions.bot]
+extends = ":workspace"
+
+[permissions.bot.filesystem]
+"/home/__AGENT__/.codex/auth.json" = "deny"
+"/home/__AGENT__/.config/bot-secrets" = "deny"

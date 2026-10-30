@@ -1,0 +1,17 @@
+[Unit]
+Description=Pelurvis: Claude Code with Telegram channel (in tmux)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+WorkingDirectory=%h/pelurvis
+Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=BUN_INSTALL=%h/.bun
+ExecStart=/usr/bin/tmux new-session -d -s pelurvis -x 200 -y 50 -c %h/pelurvis "claude --settings %h/pelurvis/.claude/service-settings.json --channels plugin:telegram@claude-plugins-official"
+ExecStop=-/usr/bin/tmux kill-session -t pelurvis
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target

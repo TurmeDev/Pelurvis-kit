@@ -1,0 +1,16 @@
+# Notion module block for ~/.codex/config.toml (merged by core/bin/build-config).
+# With asdk_app type apps (Notion), Codex does not filter tool by tool
+# (tested: no `tools.<tool>` key had any effect). That is why the app is enabled
+# whole and the real filter is the guard: modules/notion/allowed + guard.py.
+# Automatic approval: the bot has nobody to ask; whatever is not allowed is stopped by the guard.
+
+[features]
+apps = true
+
+[apps._default]
+enabled = false
+
+# Notion
+[apps.asdk_app_69c18c28f1188191bf5b8445c4ab0a2e]
+enabled = true
+default_tools_approval_mode = "approve"

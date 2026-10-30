@@ -1,0 +1,7 @@
+# Notion tools enabled by the module (one regex per line, full name).
+# Read and search:
+mcp__codex_apps__notion__(search|fetch|query_data_sources|query_multiple_data_sources|notion_get_self)
+# Write to the agenda: create rows or pages and change properties.
+mcp__codex_apps__notion__(notion_create_pages|notion_update_page)
+# Agenda installation (databases and views):
+mcp__codex_apps__notion__(notion_create_database|notion_create_view)

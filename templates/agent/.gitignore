@@ -1,0 +1,8 @@
+# editor temp files
+*.swp
+*~
+.*.swp
+# never credentials in the repo
+*.env
+secrets/
+__pycache__/

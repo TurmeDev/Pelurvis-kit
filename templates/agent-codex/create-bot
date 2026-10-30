@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# Create a Telegram bot with Codex on the current Linux account. Run by the administrator,
+# as the bot user (no sudo), from the agent-codex template folder.
+#
+#   ./create-bot "<BotName>" "<owner name>"
+#
+# Requirements (with sudo, once): the account exists, with linger:
+#   sudo useradd -m -s /bin/bash -c "<Name> (Codex)" <user>
+#   sudo loginctl enable-linger <user>
+# Interactive steps: the Codex login (code for the owner's browser), the token from
+# @BotFather (not echoed) and the owner tapping "Start" in the bot.
+# Safe to re-run: it skips what is already done.
+set -euo pipefail
+template="$(cd "$(dirname "$0")" && pwd)"
+name="${1:?usage: create-bot \"<BotName>\" \"<owner name>\"}"
+owner="${2:?missing the owner name}"
+bot="$HOME/bot"
+secrets="$HOME/.config/bot-secrets"
+export PATH="$HOME/.local/bin:$PATH"
+
+step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
+ok()   { printf '   ✔ %s\n' "$*"; }
+fail() { printf '   ✘ %s\n' "$*" >&2; exit 1; }
+
+step "0. Account"
+[[ $EUID -ne 0 ]] || fail "do not run as root: log in as the bot user"
+[[ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" == yes ]] || fail "missing: sudo loginctl enable-linger $USER"
+sudo -n true 2>/dev/null && fail "account $USER has sudo: a bot must not have it"
+ok "$USER, no sudo, with linger"
+
+step "1. Codex in ~/.local (does not touch other accounts' Codex)"
+if [[ ! -x "$HOME/.local/bin/codex" ]]; then
+  npm install -g --prefix "$HOME/.local" @openai/codex@latest --no-fund --no-audit >/dev/null
+fi
+ok "$(codex --version)"
+
+step "2. Layers in ~/bot"
+if [[ ! -d "$bot/core" ]]; then
+  mkdir -p "$bot/modules" "$bot/skin" "$bot/work"
+  cp -r "$template/core" "$bot/"
+  sed -i "s/__AGENT__/$USER/g" "$bot/core/codex.toml"
+  chmod 755 "$bot"/core/bin/* "$bot/core/guard.py"
+  cat > "$bot/skin/identity.md" <<EOF
+# Identity
+
+You are **$name**, the personal assistant of $owner. They talk to you through Telegram,
+from their phone. You reply in English.
+
+## Who you work for
+
+- What they want to solve with you first: *to be filled in*.
+- Tone: friendly.
+EOF
+  cp "$template/skin/data.md" "$bot/skin/data.md"
+  printf 'work/\n__pycache__/\n' > "$bot/.gitignore"
+  "$bot/core/bin/build-agents"
+  git -C "$bot" init -q
+  git -C "$bot" add .gitignore AGENTS.md core skin
+  git -C "$bot" -c user.name=admin -c user.email=admin@pelupc commit -qm "create $name"
+fi
+ok "$(git -C "$bot" log --oneline -1)"
+
+step "3. Codex configuration"
+mkdir -p "$HOME/.codex"
+"$bot/core/bin/build-config" 2>/dev/null
+sed "s/__AGENT__/$USER/g" "$template/codex/hooks.json" > "$HOME/.codex/hooks.json"
+ok "no approvals, sandbox without network, unreadable secrets, no plugins"
+
+step "4. Codex login"
+if ! codex login status 2>/dev/null | grep -q "Logged in"; then
+  echo "   Give the owner the link and the code shown below: they enter them in their browser"
+  echo "   with their ChatGPT account. This waits until it finishes."
+  codex login --device-auth
+fi
+ok "$(codex login status 2>&1 | tail -1)"
+
+step "5. Approve the guard in Codex"
+if ! grep -q 'hooks.json:pre_tool_use:0:0' "$HOME/.codex/config.toml"; then
+  ses="create-hooks-$$"
+  screen() { tmux capture-pane -p -t "$ses" 2>/dev/null; }
+  wait_for() { for _ in $(seq 1 30); do screen | grep -q "$1" && return 0; sleep 1; done; return 1; }
+  tmux new-session -d -s "$ses" -x 160 -y 45 -c "$bot/work" "bash -lc codex"
+  if wait_for "Hooks need review" && screen | grep -q "1 hook is new or changed"; then
+    tmux send-keys -t "$ses" Enter          # Review hooks
+    wait_for "PreToolUse" && tmux send-keys -t "$ses" Enter
+    if wait_for "Trust     New hook" && screen | grep -q "/home/$USER/bot/core/guard.py" \
+       && screen | grep -q "Source    User config - ~/.codex/hooks.json"; then
+      tmux send-keys -t "$ses" t
+      wait_for "Trust     Trusted" || true
+    fi
+  fi
+  tmux kill-session -t "$ses" 2>/dev/null || true
+fi
+grep -q 'hooks.json:pre_tool_use:0:0' "$HOME/.codex/config.toml" \
+  || fail "could not approve the guard. By hand: cd ~/bot/work && codex, Enter, Enter, t, and exit"
+ok "guard approved (trusted_hash in ~/.codex/config.toml)"
+
+step "6. Telegram bot"
+mkdir -p "$secrets"; chmod 700 "$secrets"
+if ! grep -q '^OWNER=' "$secrets/telegram.env" 2>/dev/null; then
+  read -rsp "   @BotFather token (not echoed): " token < /dev/tty; echo
+  python3 - "$token" "$secrets/telegram.env" "$HOME/.local/state/bot/session.json" <<'EOF'
+import json, os, sys, time, urllib.request
+token, dest, state = sys.argv[1:4]
+api = f"https://api.telegram.org/bot{token}/"
+def tg(m, **p):
+    q = "&".join(f"{k}={v}" for k, v in p.items())
+    with urllib.request.urlopen(api + m + ("?" + q if q else ""), timeout=60) as r:
+        return json.load(r)["result"]
+me = tg("getMe")
+print(f"   bot: @{me['username']}")
+print(f"   Ask the owner to open https://t.me/{me['username']} and tap \"Start\". Waiting up to 15 minutes…")
+offset, limit = None, time.time() + 900
+while time.time() < limit:
+    for up in tg("getUpdates", timeout=30, **({"offset": offset} if offset else {})):
+        offset = up["update_id"] + 1
+        m = up.get("message") or {}
+        sender = m.get("from") or {}
+        if (m.get("chat") or {}).get("type") == "private" and sender.get("id"):
+            who = " ".join(x for x in (sender.get("first_name"), sender.get("last_name")) if x)
+            print(f"   {who} wrote (@{sender.get('username', '—')}, id {sender['id']}). Is this the owner? [y/N] ", end="", flush=True)
+            with open("/dev/tty") as tty:   # stdin is this very script
+                r = tty.readline()
+            if r.strip().lower().startswith("y"):
+                old = os.umask(0o077)
+                with open(dest, "w") as f:
+                    f.write(f"TOKEN={token}\nOWNER={sender['id']}\n")
+                os.umask(old)
+                os.makedirs(os.path.dirname(state), exist_ok=True)
+                with open(state, "w") as f:
+                    json.dump({"offset": offset}, f)   # the bot does not reprocess /start
+                sys.exit(0)
+sys.exit("   no message arrived: run create-bot again")
+EOF
+  unset token
+fi
+ok "owner: $(sed -n 's/^OWNER=//p' "$secrets/telegram.env"), token in $secrets (600)"
+
+step "7. Service"
+mkdir -p "$HOME/.config/systemd/user"
+cp "$template/systemd/bot.service" "$HOME/.config/systemd/user/bot.service"
+systemctl --user daemon-reload
+systemctl --user enable --now bot.service >/dev/null 2>&1
+systemctl --user restart bot.service
+sleep 3
+systemctl --user is-active --quiet bot.service && ok "bot.service active" || fail "bot.service did not start: journalctl --user -u bot.service"
+
+step "8. Checks"
+python3 "$bot/core/test_guard.py" "$bot" | tail -1
+cd "$bot/work"
+codex sandbox -- sh -c 'echo x >> ../core/CORE.md' 2>&1 | grep -q "Read-only" && ok "core is read-only" || fail "the core is writable"
+codex sandbox -- sh -c "head -c1 $HOME/.codex/auth.json" 2>&1 | grep -q "Permission denied" && ok "credentials unreadable" || fail "auth.json is readable"
+codex sandbox -- sh -c 'curl -sS -m 5 https://example.com' 2>&1 | grep -q "resolve host" && ok "no network" || fail "the sandbox has network"
+echo
+echo "Done: $name replies on Telegram. Customize ~/bot/skin/identity.md and run ~/bot/core/bin/build-agents."
+echo "For it to understand voice notes, add \"$USER\" to ~/pelurvis/core/voice-allowed (as pelurvis)."

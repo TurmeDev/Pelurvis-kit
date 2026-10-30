@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# From the administrator's PC: copies this template to the bot's account and runs create-bot.
+#
+#   ./install-bot <user> "<BotName>" "<owner name>" [server]
+#
+# Example: ./install-bot bot-b "BotB" "<your-username>" pelupc
+set -euo pipefail
+user="${1:?usage: install-bot <user> \"<BotName>\" \"<owner name>\" [server]}"
+name="${2:?missing the bot name}"
+owner="${3:?missing the owner name}"
+server="${4:-pelupc}"
+here="$(cd "$(dirname "$0")" && pwd)"
+
+tar cf - -C "$here" --exclude=install-bot --exclude=__pycache__ . \
+  | ssh "$user@$server" 'rm -rf ~/.create-template && mkdir -p ~/.create-template && tar xf - -C ~/.create-template && chmod 755 ~/.create-template/create-bot'
+ssh -t "$user@$server" "~/.create-template/create-bot $(printf '%q' "$name") $(printf '%q' "$owner"); rm -rf ~/.create-template"

@@ -1,0 +1,6 @@
+[Unit]
+Description=Pelurvis daily restart (clears the context)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl --user restart pelurvis.service

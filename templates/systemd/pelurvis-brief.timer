@@ -1,0 +1,9 @@
+[Unit]
+Description=Pelurvis morning brief at 06:30
+
+[Timer]
+OnCalendar=*-*-* 06:30:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

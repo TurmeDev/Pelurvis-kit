@@ -1,0 +1,2 @@
+# Google Drive, read-only.
+mcp__codex_apps__google_drive__(search|fetch|recent_documents|list_folder|list_drives|get_file_metadata|export_file|get_document|get_document_text|get_document_tables|get_document_paragraph_range|find_document_text_range|get_spreadsheet_metadata|get_spreadsheet_range|get_spreadsheet_cells|search_spreadsheet_rows|get_presentation|get_presentation_text|get_presentation_outline|get_slide|get_profile)

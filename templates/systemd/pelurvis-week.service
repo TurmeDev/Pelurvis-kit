@@ -1,0 +1,6 @@
+[Unit]
+Description=Pelurvis: triggers the weekly review
+
+[Service]
+Type=oneshot
+ExecStart=%h/pelurvis/core/bin/trigger /week

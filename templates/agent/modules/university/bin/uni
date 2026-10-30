@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""READ-ONLY client for the FPUNA platforms.
+
+  uni educa <action> [id]      Educa (Moodle, grado.pol.una.py), mobile API with token
+  uni ealu <endpoint> [arg]    Ealu (cnc.una.py/ealu), GET only, to allowed endpoints
+  uni actions                  lists what can be queried
+
+There is no write operation: submitting, enrolling, unenrolling or
+withdrawing do not exist here. The credentials are in ~/.config/pelurvis-secrets
+and are loaded by the user with `uni-setup`.
+"""
+import http.cookiejar
+import json
+import re
+import ssl
+import sys
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+SECRETS = Path.home() / ".config/pelurvis-secrets"
+EDUCA = "https://grado.pol.una.py"
+EALU = "https://www.cnc.una.py/ealu-backend/"
+EALU_FACULTY = "POLSL"
+UA = "Pelurvis/1.0 (read-only)"
+ARG = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+# Educa sends a wrong intermediate certificate (Let's Encrypt) instead of the Sectigo
+# one that signed its certificate. The correct one is added, verified against Sectigo Root R46.
+EDUCA_CA = Path(__file__).resolve().parent.parent / "certs/sectigo-ov-r36.pem"
+
+
+def educa_opener():
+    ctx = ssl.create_default_context()
+    ctx.load_verify_locations(str(EDUCA_CA))
+    return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+
+# Educa: action -> (read-only Moodle function, needs id, description)
+EDUCA_ACTIONS = {
+    "profile": ("core_webservice_get_site_info", False, "account details"),
+    "courses": ("core_enrol_get_users_courses", False, "courses you are enrolled in"),
+    "pending": ("core_calendar_get_action_events_by_timesort", False, "assignments and activities with upcoming dates"),
+    "assignments": ("mod_assign_get_assignments", True, "assignments of a course (course id)"),
+    "assignment-status": ("mod_assign_get_submission_status", True, "status of your submission (assignment id)"),
+    "contents": ("core_course_get_contents", True, "sections and resources of a course (course id)"),
+    "grades": ("gradereport_user_get_grade_items", True, "grades of a course (course id)"),
+    "forums": ("mod_forum_get_forums_by_courses", True, "forums of a course (course id)"),
+    "announcements": ("mod_forum_get_forum_discussions", True, "discussions of a forum (forum id)"),
+}
+
+# Ealu: endpoint -> (takes an argument, description). Everything is GET.
+EALU_ENDPOINTS = {
+    "sesion-ealu/info": (False, "session details, degree programs and codes"),
+    "dashboard/mensajes": (False, "dashboard messages"),
+    "acciones-acad": (False, "available academic actions (query only)"),
+    "ultimas-notas/": (True, "latest grades (degree program/section code)"),
+    "horario-examen/": (True, "exam schedule"),
+    "inscripciones-registradas/": (True, "registered course enrollments"),
+    "inscexafinal/registradas/": (True, "registered final exam enrollments"),
+    "inscexaparcial/reg/registradas/": (True, "registered midterm enrollments"),
+    "deudas/tiene-deuda": (False, "whether there is a debt"),
+    "deudas/pendientes": (False, "pending debts"),
+}
+
+
+def secret(name: str) -> str:
+    path = SECRETS / name
+    if not path.is_file():
+        sys.exit(f"error: {name} is missing; the user must run `uni-setup` on pelupc")
+    return path.read_text().strip()
+
+
+def get_json(opener, url: str):
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
+    with opener.open(req, timeout=30) as resp:
+        body = resp.read().decode()
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        return body
+
+
+def educa(action: str, ident: str | None):
+    fn, needs_id, _ = EDUCA_ACTIONS[action]
+    params = {"wstoken": secret("educa_token"), "wsfunction": fn, "moodlewsrestformat": "json"}
+    if action in ("courses", "grades"):
+        params["userid"] = secret("educa_userid")
+    if action == "pending":
+        params.update({"timesortfrom": int(time.time()) - 86400, "limitnum": 50})
+    elif action in ("assignments", "forums"):
+        params["courseids[0]"] = ident
+    elif action == "assignment-status":
+        params["assignid"] = ident
+    elif action in ("contents", "grades"):
+        params["courseid"] = ident
+    elif action == "announcements":
+        params.update({"forumid": ident, "sortorder": 1, "perpage": 15})
+    url = f"{EDUCA}/webservice/rest/server.php?{urllib.parse.urlencode(params)}"
+    return get_json(educa_opener(), url)
+
+
+def ealu(endpoint: str, arg: str | None):
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    creds = dict(line.split("=", 1) for line in secret("ealu.env").splitlines() if "=" in line)
+    # The only POST allowed: logging in. Same as the web form.
+    login = urllib.request.Request(
+        f"{EALU}login?codfacul={EALU_FACULTY}",
+        data=urllib.parse.urlencode({"username": creds["EALU_USER"], "password": creds["EALU_PASS"]}).encode(),
+        headers={"User-Agent": UA, "Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with opener.open(login, timeout=30) as resp:
+        resp.read()
+    return get_json(opener, EALU + endpoint + (arg or ""))
+
+
+# Compact output so the agent reads it directly, without processing it with another command.
+NOISE = {"icon", "iconurl", "overviewfiles", "courseimage", "summaryfiles", "introfiles",
+         "introattachments", "contentfiles", "filters", "format", "summaryformat", "introformat",
+         "messageformat", "purpose", "normalisedeventtype", "normalisedeventtypetext", "viewurl",
+         "formattedtime", "formattedlocation", "subscription", "action", "showitemcount",
+         "lang", "theme", "configs", "functions", "advancedfeatures", "contents", "contentsinfo",
+         "completiondata", "dates", "displayname", "enrolledusercount", "visible", "uservisible",
+         "visibleoncoursepage", "modicon", "modplural", "indent", "onclick", "afterlink",
+         "customdata", "noviewlink", "permissionList",
+         "facultad"}  # Spanish key name in the Ealu API response
+# Nested objects that are only needed to identify: id and name.
+SUMMARIZE = {"course", "category"}
+MAX_OUTPUT = 15000
+DATES = {"timesort", "timestart", "timemodified", "timecreated", "duedate", "cutoffdate",
+         "allowsubmissionsfromdate", "gradingduedate", "timeopen", "timeclose", "created",
+         "modified", "startdate", "enddate", "lastaccess", "timeduration"}
+HTML = re.compile(r"<[^>]+>")
+
+
+def slim(v, key: str = ""):
+    if isinstance(v, dict):
+        if key in SUMMARIZE:
+            v = {k: v[k] for k in ("id", "fullname", "shortname", "name") if k in v}
+        out = {k: slim(x, k) for k, x in v.items() if k not in NOISE}
+        return {k: x for k, x in out.items() if x not in (None, "", [], {})}
+    if isinstance(v, list):
+        return [x for x in (slim(i, key) for i in v) if x not in (None, "", [], {})]
+    if isinstance(v, int) and not isinstance(v, bool) and key in DATES and v > 10**8:
+        return time.strftime("%a %d/%m/%Y %H:%M", time.localtime(v))
+    if isinstance(v, str):
+        s = " ".join(HTML.sub(" ", v).split())
+        return s if len(s) <= 300 else s[:300] + "…"
+    return v
+
+
+def render(data) -> str:
+    if isinstance(data, str):
+        return data
+    data = slim(data)
+    if isinstance(data, dict) and "exception" in data:
+        return f"Educa error: {data.get('message', data)}"
+    # Unwrap {"events": [...]}, {"courses": [...]}, etc.
+    if isinstance(data, dict):
+        lists = [k for k, v in data.items() if isinstance(v, list)]
+        if len(lists) == 1 and len(data) <= 3:
+            data = data[lists[0]]
+    if isinstance(data, list):
+        out = "\n".join(json.dumps(x, ensure_ascii=False) for x in data) or "(empty)"
+    else:
+        out = json.dumps(data, ensure_ascii=False)
+    if len(out) > MAX_OUTPUT:  # large outputs go to a file and reading them asks for permission
+        out = out[:MAX_OUTPUT] + "\n…(truncated: ask for something more specific, e.g. an id)"
+    return out
+
+
+def actions() -> str:
+    lines = ["Educa (uni educa <action> [id]):"]
+    lines += [f"  {a:18} {d}" for a, (_, _, d) in EDUCA_ACTIONS.items()]
+    lines += ["Ealu (uni ealu <endpoint> [arg]):"]
+    lines += [f"  {e:32} {d}" for e, (_, d) in EALU_ENDPOINTS.items()]
+    return "\n".join(lines)
+
+
+def main(argv: list[str]) -> int:
+    if argv[:1] == ["actions"] and len(argv) == 1:
+        print(actions())
+        return 0
+    if len(argv) not in (2, 3) or any(not ARG.match(a.replace("/", "")) for a in argv):
+        print("usage: uni educa <action> [id] | uni ealu <endpoint> [arg] | uni actions", file=sys.stderr)
+        return 2
+    platform, action, ident = argv[0], argv[1], (argv[2] if len(argv) == 3 else None)
+    if platform == "educa" and action in EDUCA_ACTIONS:
+        needs_id = EDUCA_ACTIONS[action][1]
+        if needs_id != (ident is not None) or (ident and not ident.isdigit()):
+            print(f"error: '{action}' {'needs a numeric id' if needs_id else 'takes no id'}", file=sys.stderr)
+            return 2
+        data = educa(action, ident)
+    elif platform == "ealu" and action in EALU_ENDPOINTS:
+        if ident is not None and not EALU_ENDPOINTS[action][0]:
+            print(f"error: '{action}' takes no argument", file=sys.stderr)
+            return 2
+        data = ealu(action, ident)
+    else:
+        print(f"error: not allowed. {actions()}", file=sys.stderr)
+        return 2
+    print(render(data))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

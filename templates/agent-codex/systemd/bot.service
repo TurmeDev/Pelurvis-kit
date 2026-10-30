@@ -1,0 +1,13 @@
+[Unit]
+Description=Telegram bot (own bridge + Codex)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/bot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/bot/core/bin/telegram-bridge
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

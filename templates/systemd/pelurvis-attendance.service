@@ -1,0 +1,6 @@
+[Unit]
+Description=Pelurvis: asks about the day's attendance
+
+[Service]
+Type=oneshot
+ExecStart=%h/pelurvis/core/bin/trigger /attendance

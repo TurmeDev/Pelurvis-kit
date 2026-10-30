@@ -1,0 +1,46 @@
+# Google module block for ~/.codex/config.toml (merged by core/bin/build-config).
+# Apps are identified by the ChatGPT connector id, not by name.
+# Only the listed tools are loaded: Codex does not even offer the others.
+# The ones that write (create_*) carry approval_mode = "approve": without it Codex asks
+# for approval, and since the bot has nobody to ask, it rejects them.
+
+[features]
+apps = true
+
+[apps._default]
+enabled = false
+
+# Gmail
+[apps.connector_2128aebfecb84f64a069897515042a44]
+enabled = true
+default_tools_enabled = false
+
+[apps.connector_2128aebfecb84f64a069897515042a44.tools]
+search_emails = { enabled = true }
+search_email_ids = { enabled = true }
+read_email = { enabled = true }
+read_email_thread = { enabled = true }
+batch_read_email = { enabled = true }
+batch_read_email_threads = { enabled = true }
+read_attachment = { enabled = true }
+list_labels = { enabled = true }
+list_drafts = { enabled = true }
+create_draft = { enabled = true, approval_mode = "approve" }
+get_profile = { enabled = true }
+
+# Google Calendar
+[apps.connector_947e0d954944416db111db556030eea6]
+enabled = true
+default_tools_enabled = false
+
+[apps.connector_947e0d954944416db111db556030eea6.tools]
+search_events = { enabled = true }
+search = { enabled = true }
+fetch = { enabled = true }
+read_event = { enabled = true }
+batch_read_event = { enabled = true }
+list_calendars = { enabled = true }
+get_availability = { enabled = true }
+get_colors = { enabled = true }
+get_profile = { enabled = true }
+create_event = { enabled = true, approval_mode = "approve" }

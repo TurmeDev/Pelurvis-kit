@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Types a command (e.g. /brief) into the agent's session, only when it is
+# idle. Used by the systemd timers; the agent does not run it.
+#
+#   trigger /brief
+#
+# Never types if an approval prompt is on screen: a keypress at that moment
+# would answer the prompt instead of sending the command.
+set -euo pipefail
+cmd="${1:?usage: trigger /command}"
+[[ "$cmd" =~ ^/[a-z-]+$ ]] || { echo "command not allowed: $cmd" >&2; exit 2; }
+
+busy() {
+  tmux capture-pane -p -t pelurvis | grep -qE "esc to interrupt|Do you want to proceed|Esc to cancel"
+}
+
+tmux has-session -t pelurvis 2>/dev/null || { echo "no pelurvis session" >&2; exit 1; }
+for _ in $(seq 1 60); do          # wait up to 10 minutes for it to become idle
+  if ! busy; then
+    tmux send-keys -t pelurvis -l "$cmd"
+    sleep 1
+    busy && { echo "the session became busy while typing; not sending" >&2; exit 1; }
+    tmux send-keys -t pelurvis Enter
+    echo "sent $cmd"
+    exit 0
+  fi
+  sleep 10
+done
+echo "the session stayed busy for 10 min; not sending $cmd" >&2
+exit 1

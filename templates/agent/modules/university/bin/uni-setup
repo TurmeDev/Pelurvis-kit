@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""Loads the Educa and Ealu credentials for `uni`. Run by the USER, not Pelurvis.
+
+  ssh -t pelurvis@pelupc ~/pelurvis/modules/university/bin/uni-setup [educa|ealu]
+
+Educa: the password is only used to obtain a mobile app token and is discarded.
+Ealu: it has no tokens, so username and password are stored (600 file).
+"""
+import getpass
+import http.cookiejar
+import json
+import os
+import ssl
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+SECRETS = Path.home() / ".config/pelurvis-secrets"
+EDUCA = "https://grado.pol.una.py"
+EALU = "https://www.cnc.una.py/ealu-backend/"
+# Correct Educa intermediate certificate (see bin/uni).
+EDUCA_CA = Path(__file__).resolve().parent.parent / "certs/sectigo-ov-r36.pem"
+
+
+def save(name: str, content: str) -> None:
+    SECRETS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(SECRETS, 0o700)
+    path = SECRETS / name
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(content + "\n")
+
+
+def post(opener, url: str, fields: dict) -> str:
+    req = urllib.request.Request(url, data=urllib.parse.urlencode(fields).encode(), method="POST",
+                                 headers={"Content-Type": "application/x-www-form-urlencoded"})
+    with opener.open(req, timeout=30) as resp:
+        return resp.read().decode()
+
+
+def setup_educa() -> None:
+    print("== Educa (grado.pol.una.py)")
+    user = input("Educa username: ").strip()
+    password = getpass.getpass("Educa password (not stored): ")
+    ctx = ssl.create_default_context()
+    ctx.load_verify_locations(str(EDUCA_CA))
+    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+    data = json.loads(post(opener, f"{EDUCA}/login/token.php",
+                           {"username": user, "password": password, "service": "moodle_mobile_app"}))
+    del password
+    if "token" not in data:
+        sys.exit(f"Educa rejected the login: {data.get('error', data)}")
+    info = json.loads(post(opener, f"{EDUCA}/webservice/rest/server.php",
+                           {"wstoken": data["token"], "wsfunction": "core_webservice_get_site_info",
+                            "moodlewsrestformat": "json"}))
+    if "userid" not in info:
+        sys.exit(f"The token does not work: {info}")
+    save("educa_token", data["token"])
+    save("educa_userid", str(info["userid"]))
+    print(f"OK: token saved for {info.get('fullname')} (userid {info['userid']}).")
+
+
+def setup_ealu() -> None:
+    print("== Ealu (cnc.una.py/ealu), faculty POLSL")
+    user = input("Ealu username: ").strip()
+    password = getpass.getpass("Ealu password: ")
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    try:
+        post(opener, f"{EALU}login?codfacul=POLSL", {"username": user, "password": password})
+        req = urllib.request.Request(EALU + "sesion-ealu/info", headers={"Accept": "application/json"})
+        with opener.open(req, timeout=30) as resp:
+            info = resp.read().decode()
+    except urllib.error.HTTPError as e:
+        sys.exit(f"Ealu rejected the login (HTTP {e.code}). Nothing was saved.")
+    save("ealu.env", f"EALU_USER={user}\nEALU_PASS={password}")
+    print(f"OK: credentials saved. Session: {info[:120]}…")
+
+
+if __name__ == "__main__":
+    targets = sys.argv[1:] or ["educa", "ealu"]
+    ok = True
+    for name, fn in (("educa", setup_educa), ("ealu", setup_ealu)):
+        if name not in targets:
+            continue
+        try:
+            fn()
+        except SystemExit as e:  # platform rejection: continue with the other one
+            print(f"FAILED {name}: {e}", file=sys.stderr)
+            ok = False
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            print(f"FAILED {name} (network or unexpected response): {e}", file=sys.stderr)
+            ok = False
+    print(f"\nCredentials in {SECRETS}: {sorted(p.name for p in SECRETS.glob('*')) if SECRETS.exists() else 'none'}")
+    sys.exit(0 if ok else 1)

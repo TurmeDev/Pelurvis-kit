@@ -1,0 +1,18 @@
+{
+  "description": "Bot guard: blocks on any error (exit 2).",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /home/__AGENT__/bot/core/guard.py",
+            "timeout": 10,
+            "statusMessage": "Guard"
+          }
+        ]
+      }
+    ]
+  }
+}

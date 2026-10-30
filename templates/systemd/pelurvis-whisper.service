@@ -1,0 +1,12 @@
+[Unit]
+Description=Pelurvis: Whisper resident on the GPU for voice notes
+
+[Service]
+Type=simple
+Environment=HF_HUB_DISABLE_TELEMETRY=1
+ExecStart=%h/pelurvis/core/bin/transcribe --serve
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

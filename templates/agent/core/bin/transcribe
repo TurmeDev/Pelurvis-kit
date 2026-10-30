@@ -1,0 +1,141 @@
+#!/home/pelurvis/.local/share/whisper-venv/bin/python
+"""Transcribes a Telegram voice note to text, locally with faster-whisper.
+
+Usage: transcribe <file>   (only files from the Telegram channel inbox)
+       transcribe --serve  (service that keeps the model loaded on the GPU)
+If the service is active, it passes the file over a Unix socket. If not,
+it transcribes in its own process: GPU (CUDA) and, if that fails, CPU.
+Variables: WHISPER_MODEL (default "large-v3-turbo" on GPU, "small" on CPU),
+WHISPER_COMPUTE (default "int8_float16": on the GTX 1650 Super, float16 is
+4 times slower), WHISPER_DEVICE ("cuda" or "cpu"),
+WHISPER_LANG (default "es": the language spoken in the audio).
+"""
+import os
+import socket
+import subprocess
+import sys
+from pathlib import Path
+
+INBOX = Path.home() / ".claude/channels/telegram/inbox"
+# Fixed path: Tailscale SSH does not define XDG_RUNTIME_DIR.
+SOCKET = Path(f"/run/user/{os.getuid()}/pelurvis-whisper.sock")
+NVIDIA = Path(sys.prefix) / "lib/python3.12/site-packages/nvidia"
+CUDA_LIBS = [str(NVIDIA / name / "lib") for name in ("cublas", "cudnn", "cuda_nvrtc")]
+
+
+def ensure_cuda_libs() -> None:
+    """The loader reads LD_LIBRARY_PATH at startup: if the paths are missing, re-exec."""
+    current = os.environ.get("LD_LIBRARY_PATH", "")
+    if all(lib in current.split(":") for lib in CUDA_LIBS):
+        return
+    os.environ["LD_LIBRARY_PATH"] = ":".join(CUDA_LIBS + ([current] if current else []))
+    os.execv(sys.executable, [sys.executable, *sys.argv])
+
+
+def decode(path: Path):
+    """Decodes with the system ffmpeg to 16 kHz mono float32 (avoids PyAV)."""
+    import numpy as np
+
+    raw = subprocess.run(
+        ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", str(path),
+         "-f", "f32le", "-ac", "1", "-ar", "16000", "-"],
+        check=True, capture_output=True,
+    ).stdout
+    return np.frombuffer(raw, dtype=np.float32)
+
+
+def load_model(device: str):
+    from faster_whisper import WhisperModel
+
+    if device == "cuda":
+        return WhisperModel(os.environ.get("WHISPER_MODEL", "large-v3-turbo"), device="cuda",
+                            compute_type=os.environ.get("WHISPER_COMPUTE", "int8_float16"))
+    return WhisperModel(os.environ.get("WHISPER_MODEL", "small"), device="cpu", compute_type="int8")
+
+
+def run(model, audio) -> str:
+    segments, _ = model.transcribe(audio, language=os.environ.get("WHISPER_LANG", "es"), vad_filter=True)
+    return " ".join(s.text.strip() for s in segments).strip() or "(no recognizable speech)"
+
+
+def transcribe(audio, device: str) -> str:
+    return run(load_model(device), audio)
+
+
+def inbox_file(arg: str) -> Path | None:
+    path = Path(arg).resolve()
+    return path if path.is_file() and INBOX.resolve() in path.parents else None
+
+
+def serve() -> int:
+    """Loads the model once on the GPU and serves paths over the socket, one at a time."""
+    ensure_cuda_libs()
+    model = load_model("cuda")
+    SOCKET.unlink(missing_ok=True)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as srv:
+        srv.bind(str(SOCKET))
+        os.chmod(SOCKET, 0o600)
+        srv.listen()
+        print(f"ready at {SOCKET}", flush=True)
+        while True:
+            conn, _ = srv.accept()
+            with conn:
+                try:
+                    path = inbox_file(conn.makefile().readline().strip())
+                    reply = run(model, decode(path)) if path else "error: file outside the inbox"
+                except Exception as e:
+                    reply = f"error: {e}"
+                conn.sendall(reply.encode())
+
+
+def ask_server(path: Path) -> tuple[bool, str | None]:
+    """Returns (service alive, text). Alive but no text: it failed and holds the VRAM."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(120)
+        try:
+            s.connect(str(SOCKET))
+        except OSError:  # no socket, or a stale socket from a stopped service
+            return False, None
+        try:
+            s.sendall(f"{path}\n".encode())
+            s.shutdown(socket.SHUT_WR)
+            reply = b"".join(iter(lambda: s.recv(65536), b"")).decode()
+        except OSError:
+            return True, None
+    return True, (None if reply.startswith("error:") else reply)
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--serve"]:
+        return serve()
+    if len(sys.argv) != 2:
+        print("usage: transcribe <file> | --serve", file=sys.stderr)
+        return 2
+    path = inbox_file(sys.argv[1])
+    if path is None:
+        print(f"error: {sys.argv[1]} is not a file from the Telegram inbox", file=sys.stderr)
+        return 2
+
+    alive, text = ask_server(path)
+    if text is not None:
+        print(text)
+        return 0
+
+    # If the service is alive but failed, it holds the VRAM: go straight to CPU.
+    device = "cpu" if alive else os.environ.get("WHISPER_DEVICE", "cuda")
+    if device == "cuda":
+        ensure_cuda_libs()
+    audio = decode(path)
+    try:
+        text = transcribe(audio, device)
+    except Exception as e:  # GPU busy, out of memory or missing libraries: continue on CPU
+        if device != "cuda":
+            raise
+        print(f"warning: GPU not available ({e}); using CPU", file=sys.stderr)
+        text = transcribe(audio, "cpu")
+    print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

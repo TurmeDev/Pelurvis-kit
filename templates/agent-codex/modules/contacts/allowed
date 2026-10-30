@@ -1,0 +1,2 @@
+# Google Contacts, read-only.
+mcp__codex_apps__google_contacts__(get_profile|read_contact|search_contacts)

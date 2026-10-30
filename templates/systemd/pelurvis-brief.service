@@ -1,0 +1,6 @@
+[Unit]
+Description=Pelurvis: triggers the morning brief
+
+[Service]
+Type=oneshot
+ExecStart=%h/pelurvis/core/bin/trigger /brief
